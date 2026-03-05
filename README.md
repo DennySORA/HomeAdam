@@ -15,6 +15,14 @@ HomeAdam(W) dynamically switches between adaptive (Adam-like) and momentum-SGD u
 ## Installation
 
 ```bash
+# From PyPI
+pip install homeadam
+```
+
+For development:
+
+```bash
+# Clone and install project environment
 uv sync
 ```
 
@@ -333,6 +341,11 @@ Required GitHub secret:
 
 - `PYPI_API_TOKEN`: PyPI API token for package publishing
 
+Published package:
+
+- PyPI: https://pypi.org/project/homeadam/
+- Latest verified release in this repository: `v0.1.2`
+
 Release flow:
 
 ```bash
@@ -345,6 +358,25 @@ git commit -m "chore(release): prepare vX.Y.Z"
 git tag vX.Y.Z
 git push origin main
 git push origin vX.Y.Z
+```
+
+Manual fallback (when GitHub Actions trigger/dispatch is unavailable):
+
+```bash
+# Build and validate artifacts
+uv run --with build python -m build
+uv run --with twine twine check dist/*
+
+# Upload directly to PyPI (only wheel + sdist)
+TWINE_USERNAME=__token__ \
+TWINE_PASSWORD="$PYPI_API_TOKEN" \
+uv run --with twine twine upload dist/*.whl dist/*.tar.gz
+
+# Create/update GitHub release assets manually if needed
+gh release create vX.Y.Z dist/*.whl dist/*.tar.gz \
+  --repo DennySORA/HomeAdam \
+  --title "HomeAdam vX.Y.Z" \
+  --generate-notes
 ```
 
 ## Benchmark
