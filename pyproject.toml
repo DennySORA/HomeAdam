@@ -1,0 +1,160 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/homeadam"]
+
+[project]
+name = "homeadam"
+version = "0.1.0"
+description = "HomeAdam(W): Adam and AdamW optimizers that sometimes go home to SGD for better generalization"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "torch>=2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov",
+    "mypy>=1.0",
+    "ruff",
+]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+# ---------------- Ruff ----------------
+
+[tool.ruff]
+line-length = 88
+target-version = "py313"
+
+[tool.ruff.lint.isort]
+combine-as-imports = true
+force-single-line = false
+lines-after-imports = 2
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+docstring-code-format = true
+
+[tool.ruff.lint]
+# Enable comprehensive linting rules for high code quality
+select = [
+    "E", # pycodestyle errors ??PEP 8 outright violations (indentation, whitespace, etc.)
+    "W", # pycodestyle warnings ??stylistic issues like excessive line length
+    "F", # Pyflakes ??logical errors (unused imports, undefined names, etc.)
+    "UP", # pyupgrade ??suggest modern Python syntax (f-strings, pathlib, etc.)
+    "B", # flake8-bugbear ??common bugs and design problems
+    "SIM", # flake8-simplify ??propose simpler, more readable constructs
+    "I", # isort ??import grouping and ordering
+    "N", # pep8-naming ??enforce naming conventions
+    "C90", # mccabe ??cyclomatic complexity checks
+    "ARG", # flake8-unused-arguments ??detect unused or redundant arguments
+    "S", # flake8-bandit ??security-oriented code issues
+    "T20", # flake8-print ??forbid stray print/debug statements
+    "RET", # flake8-return ??ensure explicit and consistent return patterns
+    "ICN", # flake8-import-conventions ??enforce import aliasing rules (e.g., `import numpy as np`)
+    "PIE", # flake8-pie ??miscellaneous correctness & readability improvements
+    "PL", # Pylint subset ??broader code-quality checks (convention, error, refactor, warning)
+    "TRY", # tryceratops ??encourage explicit, focused exception handling
+    "FLY", # flynt ??suggest converting old string formatting to f-strings
+    "PERF", # perflint ??flag patterns with measurable performance overhead
+    "ANN" # flake8-annotations ??enforce type annotations for function signatures
+]
+
+ignore = [
+    "UP047",  # Generic function `create_function_with_params` should use type parameters
+
+    "E501",   # line-too-long
+
+    "COM819", # prohibited-trailing-comma
+
+    "TRY003", # raise-vanilla-args (avoid specifying long messages outside the exception class)
+
+    "PERF203", # try-except-in-loop (try-except within a loop incurs performance overhead)
+
+    "ANN204", # missing-return-type-special-method
+    "ANN401", # any-type (dynamically typed expressions (typing.Any) are disallowed)
+]
+
+# Configure pydocstyle to use Google docstring convention
+[tool.ruff.lint.pydocstyle]
+convention = "google" # Use Google-style docstrings (Args:, Returns:, Raises:)
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "PLR2004", "ANN001", "ANN201", "PLR0913", "B905"]
+"benchmarks/**/*.py" = ["S101", "PLR2004", "ANN001", "ANN201", "PLR0913", "ARG001", "T20"]
+"src/homeadam/_functional.py" = ["PLR0913"]
+"src/homeadam/_homeadam.py" = ["PLR0913"]
+"src/homeadam/_homeadam_ew.py" = ["PLR0913"]
+"src/homeadam/_adam_srf.py" = ["PLR0913"]
+
+# ---------------- mypy ----------------
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = []
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_calls = true
+disallow_any_generics = true
+no_implicit_optional = true
+warn_unused_ignores = true
+warn_redundant_casts = true
+
+[[tool.mypy.overrides]]
+module = "torch.*"
+ignore_missing_imports = true
+
+# ---------------- pytest ----------------
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--cov=src/homeadam",
+    "--cov-report=term-missing",
+    "--cov-report=html",
+    "--cov-report=xml",
+    "--disable-warnings",
+]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "integration: marks tests as integration tests",
+    "unit: marks tests as unit tests",
+]
+filterwarnings = [
+    "ignore::DeprecationWarning",
+    "ignore::RuntimeWarning",
+    "ignore::UserWarning",
+]
+
+# ---------------- bandit ----------------
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv", "venv", "env", ".env"]
+skips = ["B101", "B601"]
+[tool.bandit.assert_used]
+skips = ["**/test_*.py", "**/tests/**"]
