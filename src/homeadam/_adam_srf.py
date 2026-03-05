@@ -9,7 +9,7 @@ from typing import Any, cast, overload
 import torch
 from torch.optim.optimizer import Optimizer, ParamsT
 
-from homeadam._functional import adam_srf_apply_step
+from homeadam._functional import adam_srf_apply_step, adam_srf_scaled_update
 
 
 def _validate_hyperparams(
@@ -190,6 +190,7 @@ class AdamSRF(Optimizer):
                 beta2=beta2,
                 eps=eps,
                 weight_decay=weight_decay,
+                foreach=foreach,
             )
 
         return loss
@@ -311,7 +312,18 @@ def _apply_group_updates(
     beta2: float,
     eps: float,
     weight_decay: float,
+    foreach: bool,
 ) -> None:
+    if foreach and _apply_group_updates_foreach(
+        batch=batch,
+        lr=lr,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        weight_decay=weight_decay,
+    ):
+        return
+
     for p, state in zip(batch.params, batch.states, strict=True):
         adam_srf_apply_step(
             p,
@@ -326,3 +338,50 @@ def _apply_group_updates(
             beta1_power=cast(torch.Tensor, state["beta1_power"]),
             beta2_power=cast(torch.Tensor, state["beta2_power"]),
         )
+
+
+def _apply_group_updates_foreach(
+    *,
+    batch: _GroupBatch,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    weight_decay: float,
+) -> bool:
+    if not batch.params:
+        return False
+
+    first_param = batch.params[0]
+    if first_param.layout != torch.strided:
+        return False
+
+    for p in batch.params:
+        if p.layout != torch.strided or p.device != first_param.device:
+            return False
+
+    scaled_updates: list[torch.Tensor] = []
+    for p, state in zip(batch.params, batch.states, strict=True):
+        scaled_update = adam_srf_scaled_update(
+            cast(torch.Tensor, state["exp_avg"]),
+            cast(torch.Tensor, state["exp_avg_sq"]),
+            step_count=None,
+            lr=lr,
+            beta1=beta1,
+            beta2=beta2,
+            eps=eps,
+            beta1_power=cast(torch.Tensor, state["beta1_power"]),
+            beta2_power=cast(torch.Tensor, state["beta2_power"]),
+        )
+        if scaled_update.dtype != p.dtype:
+            scaled_update = scaled_update.to(dtype=p.dtype)
+        scaled_updates.append(scaled_update)
+
+    try:
+        if weight_decay != 0.0:
+            torch._foreach_mul_(batch.params, 1.0 - lr * weight_decay)
+        torch._foreach_add_(batch.params, scaled_updates, alpha=-1.0)
+    except RuntimeError:
+        return False
+
+    return True

@@ -10,7 +10,11 @@ import torch
 from torch.optim.optimizer import Optimizer, ParamsT
 
 from homeadam._adam_srf import _ensure_moment_state, _validate_hyperparams
-from homeadam._functional import EWUpdateMode, homeadam_ew_apply_step
+from homeadam._functional import (
+    EWUpdateMode,
+    homeadam_ew_apply_step,
+    homeadam_ew_scaled_update,
+)
 
 
 class HomeAdamEW(Optimizer):
@@ -115,6 +119,7 @@ class HomeAdamEW(Optimizer):
                 weight_decay=weight_decay,
                 tau=tau,
                 update_mode=update_mode,
+                foreach=foreach,
             )
 
         return loss
@@ -129,6 +134,7 @@ class _GroupBatch:
     exp_avg_sqs: list[torch.Tensor]
     beta1_powers: list[torch.Tensor]
     beta2_powers: list[torch.Tensor]
+    ones: list[torch.Tensor]
 
 
 def _collect_group_batch(
@@ -146,6 +152,7 @@ def _collect_group_batch(
     exp_avg_sqs: list[torch.Tensor] = []
     beta1_powers: list[torch.Tensor] = []
     beta2_powers: list[torch.Tensor] = []
+    ones: list[torch.Tensor] = []
 
     for p in group["params"]:
         if p.grad is None:
@@ -167,9 +174,11 @@ def _collect_group_batch(
         grads.append(p.grad.to(dtype=exp_avg.dtype))
         states.append(state)
         exp_avgs.append(exp_avg)
-        exp_avg_sqs.append(cast(torch.Tensor, state["exp_avg_sq"]))
+        exp_avg_sq = cast(torch.Tensor, state["exp_avg_sq"])
+        exp_avg_sqs.append(exp_avg_sq)
         beta1_powers.append(cast(torch.Tensor, state["beta1_power"]))
         beta2_powers.append(cast(torch.Tensor, state["beta2_power"]))
+        ones.append(_ensure_one_scalar(state=state, ref=exp_avg_sq))
 
     if not params:
         return None
@@ -182,7 +191,18 @@ def _collect_group_batch(
         exp_avg_sqs=exp_avg_sqs,
         beta1_powers=beta1_powers,
         beta2_powers=beta2_powers,
+        ones=ones,
     )
+
+
+def _ensure_one_scalar(*, state: dict[str, Any], ref: torch.Tensor) -> torch.Tensor:
+    one = state.get("one")
+    if not isinstance(one, torch.Tensor):
+        one = ref.new_tensor(1.0)
+    elif one.device != ref.device or one.dtype != ref.dtype:
+        one = one.to(device=ref.device, dtype=ref.dtype)
+    state["one"] = one
+    return one
 
 
 def _update_moments_batch(
@@ -238,8 +258,21 @@ def _apply_group_updates(
     weight_decay: float,
     tau: float,
     update_mode: EWUpdateMode,
+    foreach: bool,
 ) -> None:
-    for p, state in zip(batch.params, batch.states, strict=True):
+    if foreach and _apply_group_updates_foreach(
+        batch=batch,
+        lr=lr,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        weight_decay=weight_decay,
+        tau=tau,
+        update_mode=update_mode,
+    ):
+        return
+
+    for p, state, one in zip(batch.params, batch.states, batch.ones, strict=True):
         homeadam_ew_apply_step(
             p,
             cast(torch.Tensor, state["exp_avg"]),
@@ -254,4 +287,57 @@ def _apply_group_updates(
             update_mode=update_mode,
             beta1_power=cast(torch.Tensor, state["beta1_power"]),
             beta2_power=cast(torch.Tensor, state["beta2_power"]),
+            one_tensor=one,
         )
+
+
+def _apply_group_updates_foreach(
+    *,
+    batch: _GroupBatch,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    weight_decay: float,
+    tau: float,
+    update_mode: EWUpdateMode,
+) -> bool:
+    if not batch.params:
+        return False
+
+    first_param = batch.params[0]
+    if first_param.layout != torch.strided:
+        return False
+
+    for p in batch.params:
+        if p.layout != torch.strided or p.device != first_param.device:
+            return False
+
+    scaled_updates: list[torch.Tensor] = []
+    for p, state, one in zip(batch.params, batch.states, batch.ones, strict=True):
+        scaled_update = homeadam_ew_scaled_update(
+            cast(torch.Tensor, state["exp_avg"]),
+            cast(torch.Tensor, state["exp_avg_sq"]),
+            step_count=None,
+            lr=lr,
+            beta1=beta1,
+            beta2=beta2,
+            eps=eps,
+            tau=tau,
+            update_mode=update_mode,
+            beta1_power=cast(torch.Tensor, state["beta1_power"]),
+            beta2_power=cast(torch.Tensor, state["beta2_power"]),
+            one_tensor=one,
+        )
+        if scaled_update.dtype != p.dtype:
+            scaled_update = scaled_update.to(dtype=p.dtype)
+        scaled_updates.append(scaled_update)
+
+    try:
+        if weight_decay != 0.0:
+            torch._foreach_mul_(batch.params, 1.0 - lr * weight_decay)
+        torch._foreach_add_(batch.params, scaled_updates, alpha=-1.0)
+    except RuntimeError:
+        return False
+
+    return True

@@ -10,7 +10,7 @@ import torch
 from torch.optim.optimizer import Optimizer, ParamsT
 
 from homeadam._adam_srf import _ensure_moment_state, _validate_hyperparams
-from homeadam._functional import homeadam_apply_step
+from homeadam._functional import homeadam_apply_step, homeadam_scaled_update
 
 
 def _update_group_min_vhat(
@@ -147,6 +147,7 @@ class HomeAdam(Optimizer):
                 eps=eps,
                 weight_decay=weight_decay,
                 use_adaptive_by_device=use_adaptive_by_device,
+                foreach=foreach,
             )
 
         return loss
@@ -299,7 +300,19 @@ def _apply_group_updates(
     eps: float,
     weight_decay: float,
     use_adaptive_by_device: dict[torch.device, bool | torch.Tensor],
+    foreach: bool,
 ) -> None:
+    if foreach and _apply_group_updates_foreach(
+        batch=batch,
+        lr=lr,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        weight_decay=weight_decay,
+        use_adaptive_by_device=use_adaptive_by_device,
+    ):
+        return
+
     for p, state in zip(batch.params, batch.states, strict=True):
         homeadam_apply_step(
             p,
@@ -315,3 +328,52 @@ def _apply_group_updates(
             beta1_power=cast(torch.Tensor, state["beta1_power"]),
             beta2_power=cast(torch.Tensor, state["beta2_power"]),
         )
+
+
+def _apply_group_updates_foreach(
+    *,
+    batch: _GroupBatch,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    weight_decay: float,
+    use_adaptive_by_device: dict[torch.device, bool | torch.Tensor],
+) -> bool:
+    if not batch.params:
+        return False
+
+    first_param = batch.params[0]
+    if first_param.layout != torch.strided:
+        return False
+
+    for p in batch.params:
+        if p.layout != torch.strided or p.device != first_param.device:
+            return False
+
+    scaled_updates: list[torch.Tensor] = []
+    for p, state in zip(batch.params, batch.states, strict=True):
+        scaled_update = homeadam_scaled_update(
+            cast(torch.Tensor, state["exp_avg"]),
+            cast(torch.Tensor, state["exp_avg_sq"]),
+            step_count=None,
+            lr=lr,
+            beta1=beta1,
+            beta2=beta2,
+            eps=eps,
+            use_adaptive=use_adaptive_by_device[p.device],
+            beta1_power=cast(torch.Tensor, state["beta1_power"]),
+            beta2_power=cast(torch.Tensor, state["beta2_power"]),
+        )
+        if scaled_update.dtype != p.dtype:
+            scaled_update = scaled_update.to(dtype=p.dtype)
+        scaled_updates.append(scaled_update)
+
+    try:
+        if weight_decay != 0.0:
+            torch._foreach_mul_(batch.params, 1.0 - lr * weight_decay)
+        torch._foreach_add_(batch.params, scaled_updates, alpha=-1.0)
+    except RuntimeError:
+        return False
+
+    return True

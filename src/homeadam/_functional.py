@@ -63,6 +63,24 @@ def _apply_update(
     param.add_(scaled_update, alpha=-1.0)
 
 
+def _apply_scaled_update(
+    param: Tensor,
+    *,
+    scaled_update: Tensor,
+    weight_decay: float,
+    lr: float,
+) -> None:
+    """Apply decoupled WD and an already-scaled update tensor."""
+    if weight_decay != 0.0:
+        param.mul_(1.0 - lr * weight_decay)
+
+    if scaled_update.dtype != param.dtype:
+        param.add_(scaled_update.to(dtype=param.dtype), alpha=-1.0)
+        return
+
+    param.add_(scaled_update, alpha=-1.0)
+
+
 def _update_moments(
     *,
     exp_avg: Tensor,
@@ -74,6 +92,37 @@ def _update_moments(
     """Update first/second moments in-place."""
     exp_avg.lerp_(grad, 1.0 - beta1)
     exp_avg_sq.mul_(beta2).addcmul_(grad, grad, value=1.0 - beta2)
+
+
+def adam_srf_scaled_update(
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    *,
+    step_count: int | None,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    beta1_power: Tensor | float | None = None,
+    beta2_power: Tensor | float | None = None,
+) -> Tensor:
+    """Return scaled AdamSRF update: ``(lr/bc1) * m / (v_hat + eps)``."""
+    bias_correction1 = _bias_correction_tensor(
+        exp_avg,
+        beta=beta1,
+        step_count=step_count,
+        beta_power=beta1_power,
+    )
+    bias_correction2 = _bias_correction_tensor(
+        exp_avg_sq,
+        beta=beta2,
+        step_count=step_count,
+        beta_power=beta2_power,
+    )
+
+    step_size_t = exp_avg.new_tensor(lr) / bias_correction1
+    denom = exp_avg_sq / bias_correction2 + eps
+    return (exp_avg / denom) * step_size_t
 
 
 def adam_srf_apply_step(
@@ -91,27 +140,20 @@ def adam_srf_apply_step(
     beta2_power: Tensor | float | None = None,
 ) -> None:
     """Apply Algorithm 1 update using precomputed moments."""
-    bias_correction1 = _bias_correction_tensor(
+    scaled_update = adam_srf_scaled_update(
         exp_avg,
-        beta=beta1,
-        step_count=step_count,
-        beta_power=beta1_power,
-    )
-    bias_correction2 = _bias_correction_tensor(
         exp_avg_sq,
-        beta=beta2,
         step_count=step_count,
-        beta_power=beta2_power,
+        lr=lr,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        beta1_power=beta1_power,
+        beta2_power=beta2_power,
     )
-
-    step_size_t = exp_avg.new_tensor(lr) / bias_correction1
-    denom = exp_avg_sq / bias_correction2 + eps
-    update = exp_avg / denom
-
-    _apply_update(
+    _apply_scaled_update(
         param,
-        update=update,
-        step_size_t=step_size_t,
+        scaled_update=scaled_update,
         weight_decay=weight_decay,
         lr=lr,
     )
@@ -170,37 +212,22 @@ def homeadam_apply_step(
     beta2_power: Tensor | float | None = None,
 ) -> None:
     """Apply HomeAdam(W) parameter update with precomputed moments."""
-    bias_correction1 = _bias_correction_tensor(
+    scaled_update = homeadam_scaled_update(
         exp_avg,
-        beta=beta1,
-        step_count=step_count,
-        beta_power=beta1_power,
-    )
-    bias_correction2 = _bias_correction_tensor(
         exp_avg_sq,
-        beta=beta2,
         step_count=step_count,
-        beta_power=beta2_power,
+        lr=lr,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        use_adaptive=use_adaptive,
+        beta1_power=beta1_power,
+        beta2_power=beta2_power,
     )
 
-    step_size_t = exp_avg.new_tensor(lr) / bias_correction1
-
-    if isinstance(use_adaptive, bool):
-        if use_adaptive:
-            denom = exp_avg_sq / bias_correction2 + eps
-            update = exp_avg / denom
-        else:
-            update = exp_avg
-    else:
-        use_adaptive_t = use_adaptive.to(device=exp_avg.device)
-        denom = exp_avg_sq / bias_correction2 + eps
-        adaptive_update = exp_avg / denom
-        update = torch.where(use_adaptive_t, adaptive_update, exp_avg)
-
-    _apply_update(
+    _apply_scaled_update(
         param,
-        update=update,
-        step_size_t=step_size_t,
+        scaled_update=scaled_update,
         weight_decay=weight_decay,
         lr=lr,
     )
@@ -276,8 +303,92 @@ def homeadam_ew_apply_step(
     update_mode: EWUpdateMode = "denom",
     beta1_power: Tensor | float | None = None,
     beta2_power: Tensor | float | None = None,
+    one_tensor: Tensor | None = None,
 ) -> None:
     """Apply Algorithm 3 update using precomputed moments."""
+    scaled_update = homeadam_ew_scaled_update(
+        exp_avg,
+        exp_avg_sq,
+        step_count=step_count,
+        lr=lr,
+        beta1=beta1,
+        beta2=beta2,
+        eps=eps,
+        tau=tau,
+        update_mode=update_mode,
+        beta1_power=beta1_power,
+        beta2_power=beta2_power,
+        one_tensor=one_tensor,
+    )
+
+    _apply_scaled_update(
+        param,
+        scaled_update=scaled_update,
+        weight_decay=weight_decay,
+        lr=lr,
+    )
+
+
+def homeadam_scaled_update(
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    *,
+    step_count: int | None,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    use_adaptive: bool | Tensor,
+    beta1_power: Tensor | float | None = None,
+    beta2_power: Tensor | float | None = None,
+) -> Tensor:
+    """Return scaled HomeAdam update tensor."""
+    bias_correction1 = _bias_correction_tensor(
+        exp_avg,
+        beta=beta1,
+        step_count=step_count,
+        beta_power=beta1_power,
+    )
+    bias_correction2 = _bias_correction_tensor(
+        exp_avg_sq,
+        beta=beta2,
+        step_count=step_count,
+        beta_power=beta2_power,
+    )
+
+    step_size_t = exp_avg.new_tensor(lr) / bias_correction1
+
+    if isinstance(use_adaptive, bool):
+        if use_adaptive:
+            denom = exp_avg_sq / bias_correction2 + eps
+            update = exp_avg / denom
+        else:
+            update = exp_avg
+    else:
+        use_adaptive_t = use_adaptive.to(device=exp_avg.device)
+        denom = exp_avg_sq / bias_correction2 + eps
+        adaptive_update = exp_avg / denom
+        update = torch.where(use_adaptive_t, adaptive_update, exp_avg)
+
+    return update * step_size_t
+
+
+def homeadam_ew_scaled_update(
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    *,
+    step_count: int | None,
+    lr: float,
+    beta1: float,
+    beta2: float,
+    eps: float,
+    tau: float,
+    update_mode: EWUpdateMode = "denom",
+    beta1_power: Tensor | float | None = None,
+    beta2_power: Tensor | float | None = None,
+    one_tensor: Tensor | None = None,
+) -> Tensor:
+    """Return scaled HomeAdamEW update tensor."""
     bias_correction1 = _bias_correction_tensor(
         exp_avg,
         beta=beta1,
@@ -295,7 +406,12 @@ def homeadam_ew_apply_step(
     v_hat = exp_avg_sq / bias_correction2
 
     if update_mode == "denom":
-        denom = torch.where(v_hat >= tau, v_hat + eps, v_hat.new_tensor(1.0))
+        one = one_tensor
+        if one is None:
+            one = v_hat.new_tensor(1.0)
+        elif one.device != v_hat.device or one.dtype != v_hat.dtype:
+            one = one.to(device=v_hat.device, dtype=v_hat.dtype)
+        denom = torch.where(v_hat >= tau, v_hat + eps, one)
         update = exp_avg / denom
     elif update_mode == "where_update":
         adaptive_update = exp_avg / (v_hat + eps)
@@ -303,13 +419,7 @@ def homeadam_ew_apply_step(
     else:
         raise ValueError(f"Unknown update_mode: {update_mode}")
 
-    _apply_update(
-        param,
-        update=update,
-        step_size_t=step_size_t,
-        weight_decay=weight_decay,
-        lr=lr,
-    )
+    return update * step_size_t
 
 
 def homeadam_ew_step(
@@ -326,6 +436,7 @@ def homeadam_ew_step(
     weight_decay: float,
     tau: float,
     update_mode: EWUpdateMode = "denom",
+    one_tensor: Tensor | None = None,
 ) -> None:
     """Algorithm 3: Element-wise HomeAdam(W) — per-element switching."""
     _update_moments(
@@ -347,4 +458,5 @@ def homeadam_ew_step(
         weight_decay=weight_decay,
         tau=tau,
         update_mode=update_mode,
+        one_tensor=one_tensor,
     )
