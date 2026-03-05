@@ -38,7 +38,15 @@ from homeadam import HomeAdamEW
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model = nn.Linear(10, 1).to(device)
-optimizer = HomeAdamEW(model.parameters(), lr=1e-3, tau=1.0, weight_decay=0.01)
+optimizer = HomeAdamEW(
+    model.parameters(),
+    lr=1e-3,
+    tau=1.0,
+    weight_decay=0.01,
+    state_dtype=torch.float32,   # default
+    foreach=True,                # default
+    update_mode="denom",         # default
+)
 
 for inputs, targets in dataloader:
     inputs = inputs.to(device)
@@ -58,6 +66,10 @@ for inputs, targets in dataloader:
 | `eps` | 1e-7 | Numerical stability term |
 | `weight_decay` | 0.0 | Decoupled weight decay (0 = Adam, >0 = AdamW) |
 | `tau` | 1.0 | Switching threshold `> 0` (HomeAdam/HomeAdamEW only) |
+| `state_dtype` | `torch.float32` | Optimizer state dtype (`None` = follow parameter dtype) |
+| `foreach` | `True` | Use foreach/multi-tensor moment updates where possible |
+| `capturable` | `False` | HomeAdam only: on single-device groups, keep switch decision on-device (no host `.item()`) |
+| `update_mode` | `"denom"` | HomeAdamEW only: `"denom"` (paper-faithful default) or `"where_update"` |
 
 ## Deep Analysis And Practical Recommendations
 
@@ -71,17 +83,17 @@ for inputs, targets in dataloader:
 ### 2) Global-switch synchronization reality (Algorithm 2)
 
 - Algorithm 2 still needs a global boolean decision for branch semantics.
-- Current implementation reduces this to one scalar host decision per device per param-group (not per tensor element).
-- This keeps Algorithm 2 semantics exact while avoiding excessive synchronization overhead.
+- `capturable=False` (default): one scalar host decision per device/group (low sync overhead).
+- `capturable=True`: on single-device groups, keeps decision as device tensor (no host `.item()`). Multi-device groups fall back to strict global bool semantics.
 
 ### 3) When to use which optimizer
 
 | Scenario | Recommended optimizer | Why |
 |---|---|---|
-| Need strongest baseline compatibility and expected behavior | `torch.optim.AdamW` | Most battle-tested baseline and ecosystem default |
-| Want SRF variant while staying always-adaptive | `AdamSRF` | No switching branch; simple and stable |
-| Need paper-faithful **global switch** logic | `HomeAdam` | Exact Algorithm 2 semantics |
-| Deep learning training (CNN/Transformer/LLM) with practical switching | `HomeAdamEW` | Element-wise gating is more usable in practice and recommended by paper appendix |
+| Need strongest baseline compatibility and predictable speed | `torch.optim.AdamW` | Most battle-tested baseline and ecosystem default |
+| Need paper-faithful **global switch** logic | `HomeAdam` | Exact Algorithm 2 semantics; often close to AdamW speed |
+| Need per-element switching behavior | `HomeAdamEW` | Algorithm 3 semantics, usually easier `tau` tuning than global min rule |
+| Want always-adaptive SRF variant | `AdamSRF` | No switching branch; closest to AdamW-style training loop |
 
 ### 3.1) SDXL LoRA recommendation (practical)
 
@@ -118,6 +130,9 @@ optimizer = HomeAdamEW(
     eps=1e-7,
     weight_decay=0.0,
     tau=1e-12,
+    state_dtype=torch.float32,
+    foreach=True,
+    update_mode="denom",
 )
 ```
 
@@ -132,6 +147,9 @@ optimizer = HomeAdamEW(
     betas=(0.9, 0.99),
     eps=1e-7,
     weight_decay=0.0,
+    state_dtype=torch.float32,
+    foreach=True,
+    update_mode="denom",
 )
 ```
 
@@ -175,128 +193,78 @@ PY
 
 - If you see capability warning (for example GPU capability is newer than the max compiled capability in current wheel), training may still run but you should treat peak performance/profiler behavior as potentially non-ideal.
 
-## Performance Evaluation (Measured)
+## Performance Evaluation (2026-03-06 snapshot)
 
-All algorithms are benchmarked with `benchmarks/benchmark_optimizers.py`.
-Measured on **NVIDIA GB10** (CUDA capability 12.1) with **PyTorch 2.10.0+cu128**.
+Measured in this repository on this machine:
 
-### Benchmark command
+- GPU: `NVIDIA GB10` (CUDA capability `12.1`)
+- PyTorch: `2.10.0+cu128`
+- Note: PyTorch warns this wheel is built up to capability `12.0`; numbers are still useful for relative comparison on this setup.
+
+### Commands used
 
 ```bash
-# Standard workload
+# CUDA end-to-end step benchmark
 uv run python benchmarks/benchmark_optimizers.py \
-  --device cuda --repeats 5 --warmup-steps 50 --steps 200 \
-  --batch-size 32 --input-dim 1024 --hidden-dim 2048 --output-dim 1024 \
-  --num-threads 1
+  --device cuda --repeats 3 --warmup-steps 5 --steps 30 \
+  --batch-size 8 --input-dim 256 --hidden-dim 512 --output-dim 256
 
-# Large workload
+# CPU end-to-end step benchmark
 uv run python benchmarks/benchmark_optimizers.py \
-  --device cuda --repeats 5 --warmup-steps 30 --steps 100 \
-  --batch-size 16 --input-dim 4096 --hidden-dim 8192 --output-dim 4096 \
-  --num-threads 1
+  --device cpu --repeats 3 --warmup-steps 5 --steps 30 \
+  --batch-size 8 --input-dim 256 --hidden-dim 512 --output-dim 256 \
+  --num-threads 4
+
+# CPU micro-benchmarks (update path / step throughput / memory)
+uv run python benchmarks/bench_efficiency.py
 ```
 
-### CUDA — Standard workload (1024×2048×1024, batch=32)
+### CUDA end-to-end (MLP synthetic workload)
 
-| Optimizer | Median ms/step | Mean ms/step | Samples/s | vs AdamW |
-|---|---:|---:|---:|---:|
-| `torch.AdamW` | 1.833 | 1.864 | 17,170 | baseline |
-| `AdamSRF` | 1.686 | 1.664 | 19,234 | **-8.0%** |
-| `HomeAdam (tau=1e-12)` | 1.674 | 1.675 | 19,106 | **-8.7%** |
-| `HomeAdam (tau=1.0)` | 1.735 | 1.762 | 18,161 | **-5.3%** |
-| `HomeAdam (tau=1e10)` | 1.711 | 1.670 | 19,161 | **-6.7%** |
-| `HomeAdamEW (tau=1e-12)` | 2.225 | 2.264 | 14,132 | +21.4% |
-| `HomeAdamEW (tau=1.0)` | 2.291 | 2.321 | 13,788 | +25.0% |
-| `HomeAdamEW (tau=1e10)` | 2.272 | 2.268 | 14,112 | +24.0% |
+| Optimizer | Mean ms/step | Samples/s |
+|---|---:|---:|
+| `torch.AdamW` | 0.685 | 11,679.68 |
+| `AdamSRF` | 0.926 | 8,635.29 |
+| `HomeAdam (tau=1e-12)` | 0.756 | 10,575.52 |
+| `HomeAdam (tau=1.0)` | 0.950 | 8,418.82 |
+| `HomeAdam (tau=1e10)` | 0.927 | 8,631.30 |
+| `HomeAdamEW (tau=1e-12, denom)` | 1.059 | 7,556.39 |
+| `HomeAdamEW (tau=1e-12, where_update)` | 0.916 | 8,730.93 |
+| `HomeAdamEW (tau=1.0)` | 0.983 | 8,139.34 |
+| `HomeAdamEW (tau=1e10)` | 0.868 | 9,212.75 |
 
-### CUDA — Large workload (4096×8192×4096, batch=16)
+### CPU end-to-end (same workload)
 
-| Optimizer | Median ms/step | Mean ms/step | Samples/s | vs AdamW |
-|---|---:|---:|---:|---:|
-| `torch.AdamW` | 32.408 | 32.390 | 494 | baseline |
-| `AdamSRF` | 29.840 | 29.852 | 536 | **-7.9%** |
-| `HomeAdam (tau=1e-12)` | 24.972 | 24.964 | 641 | **-22.9%** |
-| `HomeAdam (tau=1.0)` | 24.890 | 24.883 | 643 | **-23.2%** |
-| `HomeAdam (tau=1e10)` | 24.776 | 24.761 | 646 | **-23.5%** |
-| `HomeAdamEW (tau=1e-12)` | 34.034 | 34.027 | 470 | +5.0% |
-| `HomeAdamEW (tau=1.0)` | 34.007 | 33.996 | 471 | +4.9% |
-| `HomeAdamEW (tau=1e10)` | 33.985 | 33.958 | 471 | +4.9% |
+| Optimizer | Mean ms/step | Samples/s |
+|---|---:|---:|
+| `torch.AdamW` | 1.957 | 4,088.57 |
+| `AdamSRF` | 2.006 | 3,987.67 |
+| `HomeAdam (tau=1e-12)` | 1.975 | 4,049.87 |
+| `HomeAdam (tau=1.0)` | 1.917 | 4,172.33 |
+| `HomeAdam (tau=1e10)` | 2.026 | 3,948.87 |
+| `HomeAdamEW (tau=1e-12, denom)` | 2.106 | 3,797.77 |
+| `HomeAdamEW (tau=1e-12, where_update)` | 2.108 | 3,794.28 |
+| `HomeAdamEW (tau=1.0)` | 2.091 | 3,825.13 |
+| `HomeAdamEW (tau=1e10)` | 2.041 | 3,919.13 |
 
-### CPU — Standard workload (1024×2048×1024, batch=32, 1 thread)
+### CPU micro-benchmark highlights (`bench_efficiency.py`)
 
-| Optimizer | Median ms/step | Mean ms/step | Samples/s | vs AdamW |
-|---|---:|---:|---:|---:|
-| `torch.AdamW` | 14.957 | 14.903 | 2,147 | baseline |
-| `AdamSRF` | 13.666 | 13.675 | 2,340 | **-8.6%** |
-| `HomeAdam (tau=1e-12)` | 11.770 | 11.743 | 2,725 | **-21.3%** |
-| `HomeAdam (tau=1.0)` | 11.579 | 11.599 | 2,759 | **-22.6%** |
-| `HomeAdam (tau=1e10)` | 11.581 | 11.619 | 2,754 | **-22.6%** |
-| `HomeAdamEW (tau=1e-12)` | 18.912 | 18.956 | 1,688 | +26.4% |
-| `HomeAdamEW (tau=1.0)` | 18.989 | 18.731 | 1,708 | +27.0% |
-| `HomeAdamEW (tau=1e10)` | 18.668 | 18.668 | 1,714 | +24.8% |
+EW path only (`Benchmark 1`):
 
-### Isolated optimizer.step() cost (d=2M parameters)
+- `d=1,000`: `where_update` slightly faster (`7.7us` vs `8.2us`)
+- `d=100,000`: `denom` faster (`1591.6us` vs `1892.8us`)
+- `d=10,000,000`: `denom` faster (`7704.4us` vs `8918.2us`)
 
-Measures only the optimizer step, excluding forward/backward.
+Memory (`Benchmark 3`, `d=10,000,000`):
 
-| Optimizer | CUDA (us/step) | vs AdamW | CPU (us/step) | vs AdamW |
-|---|---:|---:|---:|---:|
-| `torch.AdamW` | 494 | baseline | 3,150 | baseline |
-| `AdamSRF` | 483 | **-2.4%** | 2,604 | **-17.3%** |
-| `HomeAdam (tau=1e-12)` | 508 | +2.7% | 1,371 | **-56.5%** |
-| `HomeAdam (tau=1.0)` | 371 | **-24.9%** | 1,404 | **-55.4%** |
-| `HomeAdam (tau=1e10)` | 366 | **-26.0%** | 1,384 | **-56.1%** |
-| `HomeAdamEW (tau=1e-12)` | 593 | +20.0% | 4,264 | +35.4% |
-| `HomeAdamEW (tau=1.0)` | 595 | +20.4% | 6,528 | +107.3% |
-| `HomeAdamEW (tau=1e10)` | 589 | +19.2% | 4,263 | +35.3% |
+- `AdamW`, `AdamSRF`, `HomeAdam`, `HomeAdamEW` all use ~`76.3 MB` state (`2.0x` parameter size).
 
-### GPU synchronization micro-benchmark
+### Practical conclusions
 
-| Operation (tensor d=2M) | Latency |
-|---|---:|
-| `torch.cuda.synchronize()` | 2.4 us |
-| `.item()` on scalar tensor | 28.8 us |
-| `.amin()` (async, no sync) | 34.2 us |
-| `.amin().item()` (forces pipeline sync) | 2,205 us |
-
-### Memory footprint (d=10M parameters)
-
-All optimizers store two state tensors per parameter (`exp_avg`, `exp_avg_sq`), identical overhead.
-
-| Optimizer | State (MB) | Param (MB) | Overhead |
-|---|---:|---:|---:|
-| `torch.AdamW` | 76.3 | 38.1 | 2.0x |
-| `AdamSRF` | 76.3 | 38.1 | 2.0x |
-| `HomeAdam` | 76.3 | 38.1 | 2.0x |
-| `HomeAdamEW` | 76.3 | 38.1 | 2.0x |
-
-### Key findings
-
-1. **AdamSRF is 8% faster than PyTorch AdamW** — the square-root-free denominator saves a `sqrt` kernel on both CPU and CUDA.
-
-2. **HomeAdam is fastest on large models** — 23% faster than AdamW on the large workload. The SGDM branch (`param.add_`) is much cheaper than the full adaptive path. The `.item()` synchronization cost (2.2ms in isolation) is amortized by the forward/backward time in large models.
-
-3. **HomeAdamEW overhead converges at scale** — 25% slower on small models, but **only 5% slower on large models**. The `torch.where` + temporary tensor allocation is fixed overhead that becomes negligible as forward/backward dominates. This validates the paper's recommendation of Algorithm 3 for deep learning.
-
-4. **Tau does not affect throughput** — all tau values show <3% variation, within measurement noise. Branch selection cost is negligible.
-
-5. **Memory is identical** — all variants store the same two moment tensors (2x parameter size), matching standard Adam/AdamW.
-
-### Optimizer selection guide
-
-| Scenario | Recommended | Why |
-|---|---|---|
-| Large-model GPU training | **HomeAdam** | 23% faster than AdamW, O(1/N) generalization |
-| Per-element control needed | **HomeAdamEW** | Only 5% overhead at scale, paper-recommended for DL |
-| Drop-in AdamW replacement | **AdamSRF** | 8% faster, no tau tuning needed |
-| Small model / ecosystem compat | `torch.optim.AdamW` | Most battle-tested, lowest overhead at small scale |
-
-### Notes
-
-- These are workload-specific measurements on a synthetic MLP benchmark.
-- Relative ranking can change with model architecture, tensor layout, kernel fusion, precision, and hardware.
-- The GPU capability mismatch (12.1 vs compiled max 12.0) may affect absolute numbers but not relative rankings.
-- Always benchmark on your real model before final optimizer selection.
+1. In the current small end-to-end workload, `torch.AdamW` is fastest, with `HomeAdam` close behind depending on `tau`.
+2. `HomeAdamEW` is generally slower than `HomeAdam`/`AdamW` here, but still the recommended choice when you specifically want Algorithm 3 per-element switching semantics.
+3. `update_mode="denom"` remains the default because it is paper-faithful and faster at medium/large tensor sizes in the isolated CPU micro-benchmark.
+4. Keep performance decisions workload-specific: benchmark on your real training setup (for example SDXL LoRA) before locking optimizer settings.
 
 ## Development
 
@@ -344,7 +312,7 @@ Required GitHub secret:
 Published package:
 
 - PyPI: https://pypi.org/project/homeadam/
-- Latest verified release in this repository: `v0.1.2`
+- Latest verified release in this repository: `v0.1.3`
 
 Release flow:
 

@@ -140,19 +140,38 @@ def main() -> None:
         (
             "HomeAdamEW (Alg3, tau=1e-12)",
             lambda params: HomeAdamEW(
-                params, lr=args.lr, weight_decay=args.weight_decay, tau=1e-12
+                params,
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                tau=1e-12,
+            ),
+        ),
+        (
+            "HomeAdamEW (Alg3, tau=1e-12, where_update)",
+            lambda params: HomeAdamEW(
+                params,
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                tau=1e-12,
+                update_mode="where_update",
             ),
         ),
         (
             "HomeAdamEW (Alg3, tau=1.0)",
             lambda params: HomeAdamEW(
-                params, lr=args.lr, weight_decay=args.weight_decay, tau=1.0
+                params,
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                tau=1.0,
             ),
         ),
         (
             "HomeAdamEW (Alg3, tau=1e10)",
             lambda params: HomeAdamEW(
-                params, lr=args.lr, weight_decay=args.weight_decay, tau=1e10
+                params,
+                lr=args.lr,
+                weight_decay=args.weight_decay,
+                tau=1e10,
             ),
         ),
     ]

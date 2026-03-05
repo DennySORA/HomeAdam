@@ -1,7 +1,7 @@
 """Efficiency benchmarks for HomeAdam optimizer variants.
 
 Measures:
-1. Micro-benchmark: ones_like vs new_tensor(1.0) in EW switching
+1. Micro-benchmark: EW legacy `denom` path vs `where_update` path
 2. Per-step throughput across parameter scales
 3. Peak memory comparison
 
@@ -94,26 +94,11 @@ def _make_param_with_grad(dim: int) -> nn.Parameter:
 
 
 # ---------------------------------------------------------------------------
-# Benchmark 1: ones_like vs new_tensor(1.0) micro-benchmark
+# Benchmark 1: EW update path micro-benchmark
 # ---------------------------------------------------------------------------
 
 
-def _ew_kernel_ones_like(
-    param: Tensor,
-    exp_avg: Tensor,
-    exp_avg_sq: Tensor,
-    grad: Tensor,
-    tau: float,
-    eps: float,
-    step_size: float,
-    bc2: float,
-) -> None:
-    v_hat = exp_avg_sq / bc2
-    denom = torch.where(v_hat >= tau, v_hat + eps, torch.ones_like(v_hat))
-    param.addcdiv_(exp_avg, denom, value=-step_size)
-
-
-def _ew_kernel_new_tensor(
+def _ew_kernel_denom(
     param: Tensor,
     exp_avg: Tensor,
     exp_avg_sq: Tensor,
@@ -128,8 +113,24 @@ def _ew_kernel_new_tensor(
     param.addcdiv_(exp_avg, denom, value=-step_size)
 
 
-def bench_ones_like_vs_new_tensor() -> list[BenchResult]:
-    """Benchmark 1: Compare allocation strategies in EW switching."""
+def _ew_kernel_where_update(
+    param: Tensor,
+    exp_avg: Tensor,
+    exp_avg_sq: Tensor,
+    grad: Tensor,
+    tau: float,
+    eps: float,
+    step_size: float,
+    bc2: float,
+) -> None:
+    v_hat = exp_avg_sq / bc2
+    adaptive_update = exp_avg / (v_hat + eps)
+    update = torch.where(v_hat >= tau, adaptive_update, exp_avg)
+    param.add_(update, alpha=-step_size)
+
+
+def bench_ew_update_paths() -> list[BenchResult]:
+    """Benchmark 1: Compare EW legacy vs fast update path."""
     results: list[BenchResult] = []
     repeats = 200
 
@@ -145,37 +146,41 @@ def bench_ones_like_vs_new_tensor() -> list[BenchResult]:
             "bc2": 0.99,
         }
 
-        # --- ones_like ---
+        # --- legacy denom path ---
         p1 = torch.randn(dim)
         m1 = torch.randn(dim)
         v1 = torch.rand(dim)
 
-        def run_old(
+        def run_denom(
             _p: Tensor = p1,
             _m: Tensor = m1,
             _v: Tensor = v1,
             _kw: dict[str, object] = shared,
         ) -> None:
-            _ew_kernel_ones_like(_p, _m, _v, **_kw)  # type: ignore[arg-type]
+            _ew_kernel_denom(_p, _m, _v, **_kw)  # type: ignore[arg-type]
 
-        med_old, iqr_old = _bench(run_old, repeats=repeats)
-        results.append(BenchResult(f"ones_like    {label}", med_old, iqr_old, repeats))
+        med_denom, iqr_denom = _bench(run_denom, repeats=repeats)
+        results.append(
+            BenchResult(f"denom        {label}", med_denom, iqr_denom, repeats)
+        )
 
-        # --- new_tensor ---
+        # --- where_update path ---
         p2 = torch.randn(dim)
         m2 = torch.randn(dim)
         v2 = torch.rand(dim)
 
-        def run_new(
+        def run_where_update(
             _p: Tensor = p2,
             _m: Tensor = m2,
             _v: Tensor = v2,
             _kw: dict[str, object] = shared,
         ) -> None:
-            _ew_kernel_new_tensor(_p, _m, _v, **_kw)  # type: ignore[arg-type]
+            _ew_kernel_where_update(_p, _m, _v, **_kw)  # type: ignore[arg-type]
 
-        med_new, iqr_new = _bench(run_new, repeats=repeats)
-        results.append(BenchResult(f"new_tensor   {label}", med_new, iqr_new, repeats))
+        med_where, iqr_where = _bench(run_where_update, repeats=repeats)
+        results.append(
+            BenchResult(f"where_update {label}", med_where, iqr_where, repeats)
+        )
 
     return results
 
@@ -195,7 +200,16 @@ def bench_optimizer_step_throughput() -> list[BenchResult]:
         ("AdamSRF", AdamSRF, {"lr": 1e-3}),
         ("HomeAdam  tau=1e-10", HomeAdam, {"lr": 1e-3, "tau": 1e-10}),
         ("HomeAdam  tau=1e10", HomeAdam, {"lr": 1e-3, "tau": 1e10}),
-        ("HomeAdamEW tau=0.5", HomeAdamEW, {"lr": 1e-3, "tau": 0.5}),
+        (
+            "HomeAdamEW where_update",
+            HomeAdamEW,
+            {"lr": 1e-3, "tau": 0.5, "update_mode": "where_update"},
+        ),
+        (
+            "HomeAdamEW denom",
+            HomeAdamEW,
+            {"lr": 1e-3, "tau": 0.5, "update_mode": "denom"},
+        ),
     ]
 
     for dim in [1_000, 100_000, 10_000_000]:
@@ -289,10 +303,10 @@ def main() -> None:
     sys.stdout.write(f"PyTorch {torch.__version__} | CPU\n")
     sys.stdout.write(f"Threads: {torch.get_num_threads()}\n")
 
-    sys.stdout.write("\n[1/3] ones_like vs new_tensor(1.0) ...\n")
+    sys.stdout.write("\n[1/3] EW denom vs where_update ...\n")
     _print_table(
-        "Benchmark 1: EW Allocation Strategy (ones_like vs new_tensor)",
-        bench_ones_like_vs_new_tensor(),
+        "Benchmark 1: EW Update Path (denom vs where_update)",
+        bench_ew_update_paths(),
     )
 
     sys.stdout.write("\n[2/3] Optimizer step throughput ...\n")
