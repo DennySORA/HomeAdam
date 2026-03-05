@@ -217,50 +217,50 @@ uv run python benchmarks/benchmark_optimizers.py \
   --batch-size 32 --input-dim 1024 --hidden-dim 2048 --output-dim 1024 --num-threads 1
 
 # CPU micro-benchmarks
-uv run python benchmarks/bench_efficiency.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run python benchmarks/bench_efficiency.py
 ```
 
 ### CUDA — Standard workload (1024x2048x1024, batch=32)
 
 | Optimizer | Median ms/step | Mean ms/step | Samples/s | vs AdamW |
 |---|---:|---:|---:|---:|
-| `torch.AdamW` | 1.897 | 1.894 | 16,899 | baseline |
-| `AdamSRF` | 2.391 | 2.382 | 13,437 | +26.0% |
-| `HomeAdam (tau=1e-12)` | 2.290 | 2.285 | 14,007 | +20.7% |
-| `HomeAdam (tau=1.0)` | 2.342 | 2.329 | 13,740 | +23.5% |
-| `HomeAdam (tau=1e10)` | 2.118 | 2.076 | 15,413 | +11.6% |
-| `HomeAdamEW (tau=1e-12, denom)` | 2.711 | 2.708 | 11,818 | +42.9% |
-| `HomeAdamEW (tau=1e-12, where_update)` | 2.668 | 2.658 | 12,040 | +40.6% |
-| `HomeAdamEW (tau=1.0)` | 2.830 | 2.841 | 11,262 | +49.2% |
-| `HomeAdamEW (tau=1e10)` | 2.633 | 2.626 | 12,184 | +38.8% |
+| `torch.AdamW` | 1.867 | 1.865 | 17,157 | baseline |
+| `AdamSRF` | 2.194 | 2.195 | 14,577 | +17.5% |
+| `HomeAdam (tau=1e-12)` | 2.330 | 2.283 | 14,014 | +24.8% |
+| `HomeAdam (tau=1.0)` | 2.312 | 2.310 | 13,854 | +23.8% |
+| `HomeAdam (tau=1e10)` | 2.329 | 2.307 | 13,871 | +24.7% |
+| `HomeAdamEW (tau=1e-12, denom)` | 2.778 | 2.773 | 11,539 | +48.8% |
+| `HomeAdamEW (tau=1e-12, where_update)` | 2.812 | 2.813 | 11,375 | +50.6% |
+| `HomeAdamEW (tau=1.0)` | 2.740 | 2.751 | 11,634 | +46.8% |
+| `HomeAdamEW (tau=1e10)` | 2.757 | 2.745 | 11,659 | +47.7% |
 
 ### CUDA — Large workload (4096x8192x4096, batch=16)
 
 | Optimizer | Median ms/step | Mean ms/step | Samples/s | vs AdamW |
 |---|---:|---:|---:|---:|
-| `torch.AdamW` | 36.318 | 36.324 | 440 | baseline |
-| `AdamSRF` | 36.067 | 36.025 | 444 | -0.7% |
-| `HomeAdam (tau=1e-12)` | 29.181 | 29.192 | 548 | **-19.7%** |
-| `HomeAdam (tau=1.0)` | 29.197 | 29.111 | 550 | **-19.6%** |
-| `HomeAdam (tau=1e10)` | 29.204 | 29.197 | 548 | **-19.6%** |
-| `HomeAdamEW (tau=1e-12, denom)` | 40.102 | 40.089 | 399 | +10.4% |
-| `HomeAdamEW (tau=1e-12, where_update)` | 41.194 | 41.173 | 389 | +13.4% |
-| `HomeAdamEW (tau=1.0)` | 40.099 | 40.316 | 397 | +10.4% |
-| `HomeAdamEW (tau=1e10)` | 40.508 | 40.617 | 394 | +11.5% |
+| `torch.AdamW` | 33.568 | 33.370 | 479 | baseline |
+| `AdamSRF` | 33.355 | 33.802 | 473 | -0.6% |
+| `HomeAdam (tau=1e-12)` | 26.794 | 26.959 | 594 | **-20.2%** |
+| `HomeAdam (tau=1.0)` | 26.637 | 26.632 | 601 | **-20.6%** |
+| `HomeAdam (tau=1e10)` | 26.610 | 26.611 | 601 | **-20.7%** |
+| `HomeAdamEW (tau=1e-12, denom)` | 37.293 | 37.297 | 429 | +11.1% |
+| `HomeAdamEW (tau=1e-12, where_update)` | 38.632 | 38.608 | 414 | +15.1% |
+| `HomeAdamEW (tau=1.0)` | 39.244 | 39.202 | 408 | +16.9% |
+| `HomeAdamEW (tau=1e10)` | 40.048 | 40.044 | 400 | +19.3% |
 
 ### CPU — Standard workload (1024x2048x1024, batch=32, 1 thread)
 
 | Optimizer | Median ms/step | Mean ms/step | Samples/s | vs AdamW |
 |---|---:|---:|---:|---:|
-| `torch.AdamW` | 14.564 | 14.514 | 2,205 | baseline |
-| `AdamSRF` | 14.719 | 14.723 | 2,174 | +1.1% |
-| `HomeAdam (tau=1e-12)` | 12.262 | 12.303 | 2,601 | **-15.8%** |
-| `HomeAdam (tau=1.0)` | 12.888 | 12.846 | 2,491 | **-11.5%** |
-| `HomeAdam (tau=1e10)` | 12.877 | 12.781 | 2,504 | **-11.6%** |
-| `HomeAdamEW (tau=1e-12, denom)` | 21.397 | 21.504 | 1,488 | +46.9% |
-| `HomeAdamEW (tau=1e-12, where_update)` | 21.643 | 21.607 | 1,481 | +48.6% |
-| `HomeAdamEW (tau=1.0)` | 20.785 | 21.068 | 1,519 | +42.7% |
-| `HomeAdamEW (tau=1e10)` | 20.798 | 20.812 | 1,538 | +42.8% |
+| `torch.AdamW` | 14.439 | 14.448 | 2,215 | baseline |
+| `AdamSRF` | 14.781 | 14.800 | 2,162 | +2.4% |
+| `HomeAdam (tau=1e-12)` | 12.361 | 12.369 | 2,587 | **-14.4%** |
+| `HomeAdam (tau=1.0)` | 12.329 | 12.354 | 2,590 | **-14.6%** |
+| `HomeAdam (tau=1e10)` | 12.336 | 12.330 | 2,595 | **-14.6%** |
+| `HomeAdamEW (tau=1e-12, denom)` | 20.319 | 20.038 | 1,597 | +40.7% |
+| `HomeAdamEW (tau=1e-12, where_update)` | 21.016 | 21.065 | 1,519 | +45.6% |
+| `HomeAdamEW (tau=1.0)` | 20.763 | 20.758 | 1,542 | +43.8% |
+| `HomeAdamEW (tau=1e10)` | 21.181 | 21.149 | 1,513 | +46.7% |
 
 ### CPU micro-benchmark highlights (`bench_efficiency.py`)
 
@@ -268,21 +268,21 @@ EW update mode comparison (isolated, d=10M):
 
 | Mode | Median (us) | IQR (us) |
 |---|---:|---:|
-| `denom` | 7,493 | 1,303 |
-| `where_update` | 8,994 | 1,339 |
+| `denom` | 31,139 | 697 |
+| `where_update` | 33,179 | 961 |
 
-`denom` is ~17% faster at large tensor sizes. At d=1K, `where_update` is slightly faster (7.7 vs 8.2 us).
+`denom` is ~6.1% faster at large tensor sizes (10M). At d=1K, `where_update` is slightly faster (7.7 vs 8.0 us).
 
 Isolated optimizer step throughput (d=10M, CPU single-thread):
 
 | Optimizer | us/step | vs AdamW |
 |---|---:|---:|
-| `torch.AdamW` | 8,687 | baseline |
-| `AdamSRF` | 8,758 | +0.8% |
-| `HomeAdam (tau=1e-10)` | 6,173 | **-28.9%** |
-| `HomeAdam (tau=1e10)` | 6,046 | **-30.4%** |
-| `HomeAdamEW (denom)` | 13,374 | +53.9% |
-| `HomeAdamEW (where_update)` | 13,544 | +55.9% |
+| `torch.AdamW` | 18,305 | baseline |
+| `AdamSRF` | 17,770 | -2.9% |
+| `HomeAdam (tau=1e-10)` | 11,768 | **-35.7%** |
+| `HomeAdam (tau=1e10)` | 11,773 | **-35.7%** |
+| `HomeAdamEW (denom)` | 41,549 | +127.0% |
+| `HomeAdamEW (where_update)` | 41,470 | +126.5% |
 
 Memory footprint (d=10M):
 
@@ -292,15 +292,15 @@ Memory footprint (d=10M):
 
 ### Key findings
 
-1. **HomeAdam is fastest on large models** — 20% faster than PyTorch AdamW on the large CUDA workload. The SGDM branch (`param.add_`) is much cheaper than the full adaptive path. The `.item()` sync cost is amortized by forward/backward time.
+1. **HomeAdam is fastest on large models** — about 20% faster than PyTorch AdamW on the large CUDA workload, and ~14.6% faster on the CPU standard workload.
 
-2. **AdamSRF is near-identical to AdamW in throughput** — the square-root saving is offset by the extra Python-level tensor ops (the refactored `_apply_update` path). At large scale, AdamSRF converges to AdamW speed.
+2. **AdamSRF is close to AdamW only on large CUDA** — -0.6% on the large CUDA workload, but +17.5% overhead on the CUDA standard workload and +2.4% on CPU standard.
 
-3. **HomeAdamEW has higher per-step overhead** — due to `torch.where` + extra tensor allocations. However, the overhead shrinks from ~45% (standard) to ~10% (large) as forward/backward dominates. The paper recommends Algorithm 3 for deep learning, and at realistic model scales the overhead is modest.
+3. **HomeAdamEW has higher per-step overhead** — around +47% to +51% on CUDA standard, and +11% to +19% on CUDA large as forward/backward dominates.
 
-4. **`update_mode="denom"` is faster than `"where_update"`** — consistently ~17% faster at large tensor sizes in micro-benchmarks. Both are mathematically equivalent; `denom` is the paper-faithful default.
+4. **`update_mode` tradeoff is small in end-to-end step time** — the isolated EW kernel shows `denom` ~6.1% faster at 10M, but full optimizer-step throughput at 10M is nearly tied (`where_update` ~0.2% faster).
 
-5. **Tau does not meaningfully affect throughput** — all tau values show <5% variation.
+5. **Tau impact depends on variant** — HomeAdam is very stable across tau in these runs, while HomeAdamEW can vary noticeably (up to ~8% on large CUDA).
 
 6. **Memory is identical across all variants** — 2.0x parameter size (exp_avg + exp_avg_sq), same as standard Adam/AdamW.
 
@@ -308,14 +308,16 @@ Memory footprint (d=10M):
 
 | Scenario | Recommended | Why |
 |---|---|---|
-| Large-model GPU training | **HomeAdam** | 20% faster than AdamW, O(1/N) generalization |
-| Per-element switching needed | **HomeAdamEW** | ~10% overhead at large scale, paper-recommended for DL |
-| Drop-in AdamW replacement | **AdamSRF** | Same speed, no tau tuning, no sqrt |
+| Large-model GPU training | **HomeAdam** | ~20% faster than AdamW in this benchmark, O(1/N) generalization |
+| Paper-faithful DL variant | **HomeAdamEW / HomeAdamW** | Paper conclusion states element-wise variant is more suitable for deep learning; HomeAdamW is favored over HomeAdam in test metrics |
+| Per-element switching needed | **HomeAdamEW** | +11% to +19% overhead at large scale, paper-recommended for DL |
+| No-tau adaptive baseline | **AdamSRF** | No tau tuning, but throughput is workload-dependent |
 | Small model / max compatibility | `torch.optim.AdamW` | Fastest at small scale, ecosystem default |
 
 ### Notes
 
 - These are workload-specific measurements on a synthetic MLP benchmark.
+- This section validates **throughput only**; it does not directly verify the paper's CV/NLP generalization claims (test accuracy/perplexity).
 - Relative ranking can change with model architecture, tensor layout, kernel fusion, precision, and hardware.
 - The GPU capability mismatch (12.1 vs compiled max 12.0) may affect absolute numbers but not relative rankings.
 - Always benchmark on your real model before final optimizer selection.
@@ -327,7 +329,7 @@ Memory footprint (d=10M):
 uv run python benchmarks/benchmark_optimizers.py --device auto
 
 # EW micro-benchmarks + memory
-uv run python benchmarks/bench_efficiency.py
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 uv run python benchmarks/bench_efficiency.py
 
 # Eager vs torch.compile and HomeAdam capturable behavior
 uv run python benchmarks/benchmark_compile_capturable.py --device auto
